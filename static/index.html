@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RealChat 🦞</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 登录遮罩 -->
+<div id="auth-overlay" class="auth-overlay">
+  <div class="auth-card">
+    <h2>🦞 RealChat</h2>
+    <p class="auth-desc">请输入网关令牌以访问聊天</p>
+    <div class="auth-input-row">
+      <input type="password" id="auth-token-input" class="auth-input"
+             placeholder="输入令牌..." autocomplete="off">
+      <button id="auth-login-btn" class="auth-btn">验证</button>
+    </div>
+    <p id="auth-error" class="auth-error hidden"></p>
+  </div>
+</div>
+
+<button id="sidebar-toggler-fab" title="展开侧边栏">☰</button>
+<div id="app">
+  <!-- 左侧边栏 -->
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <button id="new-chat-btn" title="新建对话">+ 新对话</button>
+      <button id="toggle-sidebar-btn" title="收起侧边栏">◀</button>
+    </div>
+    <div id="chat-list"></div>
+    <div id="sidebar-footer">
+      <button id="settings-btn" title="设置">⚙️ 设置</button>
+    </div>
+  </aside>
+
+  <!-- 主区域 -->
+  <main id="main-area">
+    <!-- 聊天区 -->
+    <div id="chat-area">
+      <div id="messages">
+        <div class="welcome-msg">
+          <h2>🦞 RealChat</h2>
+          <p>像真人聊天一样，分条发送，AI 耐心倾听</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div id="input-area">
+      <!-- 深度思考开关 -->
+      <div id="thinking-controls">
+        <div class="thinking-bar">
+          <button id="think-toggle-btn" class="think-toggle" title="切换深度思考">
+            <span class="think-icon">🧠</span>
+            <span class="think-label">深度思考</span>
+          </button>
+        </div>
+      </div>
+      <div id="input-row">
+        <input type="text" id="message-input" placeholder="输入消息..." autofocus>
+        <button id="send-btn" title="发送 (Enter)">发送</button>
+      </div>
+      <div id="buffer-bar">
+        <span id="buffer-indicator" class="hidden">
+          已缓冲 <b id="buffer-count">0</b> 条
+        </span>
+        <span id="input-hint">
+          Enter 发送 · <span class="done-cmd">/done</span> 立即触发
+        </span>
+      </div>
+    </div>
+
+    <!-- 状态栏 -->
+    <div id="status-bar">
+      <span id="status-text">就绪</span>
+      <span id="status-right">
+        <button id="theme-btn" title="切换主题">🌙</button>
+        <button id="clear-btn" title="清空当前对话">🗑️ 清空</button>
+      </span>
+    </div>
+  </main>
+</div>
+
+<!-- 设置弹窗 -->
+<div id="settings-modal" class="modal-overlay hidden">
+  <div class="modal-content modal-wide">
+    <div class="modal-header">
+      <h3>⚙️ 设置</h3>
+      <button id="modal-close-btn" class="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- 分区1：API 连接 (Provider) -->
+      <div class="settings-section">
+        <h4 class="section-title">🔌 API 连接</h4>
+        <p class="section-desc">模型服务提供商的连接配置。兼容 OpenAI Chat Completions 格式。</p>
+        <div class="settings-grid">
+          <div class="setting-group setting-group-wide">
+            <label class="setting-label" for="setting-api_base_url">Base URL</label>
+            <input type="url" id="setting-api_base_url" class="setting-input"
+                   placeholder="https://api.deepseek.com/v1"
+                   list="api-base-suggestions">
+            <datalist id="api-base-suggestions">
+              <option value="https://api.deepseek.com/v1">DeepSeek</option>
+              <option value="https://api.openai.com/v1">OpenAI</option>
+              <option value="https://open.bigmodel.cn/api/paas/v4">智谱 GLM</option>
+              <option value="https://dashscope.aliyuncs.com/compatible-mode/v1">通义千问</option>
+              <option value="https://api.moonshot.cn/v1">Moonshot</option>
+            </datalist>
+            <span class="setting-hint">API 端点地址，支持所有 OpenAI 兼容接口</span>
+          </div>
+          <div class="setting-group setting-group-wide">
+            <label class="setting-label" for="setting-api_key">API Key</label>
+            <input type="password" id="setting-api_key" class="setting-input"
+                   placeholder="sk-...">
+            <span class="setting-hint">从环境变量 <code>REALCHAT_API_KEY</code> 读取，此处可覆盖</span>
+          </div>
+          <div class="setting-group setting-group-wide">
+            <label class="setting-label" for="setting-auth_token">🔐 Auth Token</label>
+            <input type="password" id="setting-auth_token" class="setting-input"
+                   placeholder="留空则不启用鉴权">
+            <span class="setting-hint">网关访问令牌，修改后需用新令牌重新登录</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分区2：深度思考 -->
+      <div class="settings-section">
+        <h4 class="section-title">🧠 深度思考</h4>
+        <p class="section-desc">控制 AI 回复前的推理深度。启用后 AI 会先内部思考再回答，回复质量更高但更慢。
+        <br>对 DeepSeek Chat 使用 <code>thinking</code> 参数，对 OpenAI 使用 <code>reasoning_effort</code>。</p>
+        <div class="settings-grid">
+          <div class="setting-group">
+            <label class="setting-label" for="setting-thinking_level">思考等级</label>
+            <select id="setting-thinking_level" class="setting-input">
+              <option value="off">⚪ 关闭 — 不启用深度思考</option>
+              <option value="minimal">💭 极简 — 512 tokens</option>
+              <option value="low">🔹 低 — 1024 tokens</option>
+              <option value="medium">🔶 中 — 2048 tokens</option>
+              <option value="high">🔴 高 — 4096 tokens</option>
+              <option value="extra_high">🔥 极高 — 8192 tokens</option>
+              <option value="maximum">💥 最大 — 16384 tokens</option>
+            </select>
+            <span class="setting-hint">等级越高，思考 token 越多，回复质量越高但延迟越大</span>
+          </div>
+          <div class="setting-group setting-group-single">
+            <!-- placeholder for grid alignment -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 分区3：模型 -->
+      <div class="settings-section">
+        <h4 class="section-title">🧠 模型</h4>
+        <p class="section-desc">选择模型并设置输出上限。</p>
+        <div class="settings-grid">
+          <div class="setting-group">
+            <label class="setting-label" for="setting-model">Model ID</label>
+            <input type="text" id="setting-model" class="setting-input"
+                   placeholder="deepseek-chat"
+                   list="model-suggestions">
+            <datalist id="model-suggestions">
+              <option value="deepseek-chat">DeepSeek Chat — 通用对话</option>
+              <option value="deepseek-reasoner">DeepSeek Reasoner — 深度推理</option>
+              <option value="gpt-4o">GPT-4o — OpenAI 旗舰</option>
+              <option value="gpt-4o-mini">GPT-4o Mini — 轻量快速</option>
+              <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+              <option value="glm-4-flash">GLM-4 Flash — 智谱免费</option>
+              <option value="qwen-turbo">通义千问 Turbo</option>
+            </datalist>
+            <span class="setting-hint">支持任意 OpenAI 兼容模型 ID</span>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="setting-max_tokens">Max Tokens</label>
+            <input type="number" id="setting-max_tokens" class="setting-input"
+                   min="1" max="131072" step="64" value="2048">
+            <span class="setting-hint">单次回复最大 token 数 (1–131072)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分区4：推理参数 (Inference) -->
+      <div class="settings-section">
+        <h4 class="section-title">🎛️ 推理参数</h4>
+        <p class="section-desc">控制模型输出风格：随机性、重复抑制、采样策略。</p>
+        <div class="settings-grid">
+
+          <div class="setting-group">
+            <label class="setting-label">Temperature <span class="setting-range-val" id="val-temp">0.80</span></label>
+            <input type="range" id="setting-temperature" min="0" max="2" step="0.05" value="0.8" class="setting-range">
+            <span class="setting-hint">随机性控制：闲聊 0.8–1.2，严谨 0.1–0.3</span>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Top P <span class="setting-range-val" id="val-topp">0.90</span></label>
+            <input type="range" id="setting-top_p" min="0" max="1" step="0.05" value="0.9" class="setting-range">
+            <span class="setting-hint">核采样：仅保留累积概率前 P 的候选词</span>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Frequency Penalty <span class="setting-range-val" id="val-freq">0.00</span></label>
+            <input type="range" id="setting-frequency_penalty" min="-2" max="2" step="0.05" value="0" class="setting-range">
+            <span class="setting-hint">正值抑制重复用词，避免啰嗦</span>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Presence Penalty <span class="setting-range-val" id="val-pres">0.00</span></label>
+            <input type="range" id="setting-presence_penalty" min="-2" max="2" step="0.05" value="0" class="setting-range">
+            <span class="setting-hint">正值鼓励引入新话题维度</span>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label" for="setting-seed">Seed</label>
+            <input type="number" id="setting-seed" class="setting-input" placeholder="留空 = 随机">
+            <span class="setting-hint">固定随机种子使输出可复现</span>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label" for="setting-stop">Stop 序列</label>
+            <input type="text" id="setting-stop" class="setting-input"
+                   placeholder="</para>, <|endoftext|>">
+            <span class="setting-hint">逗号分隔，兜底停止词</span>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 分区5：System Prompt -->
+      <div class="settings-section">
+        <h4 class="section-title">📝 System Prompt</h4>
+        <p class="section-desc">定义 AI 的行为规则、输出格式和人设。支持 <code>&lt;thinking&gt;</code> <code>&lt;para&gt;</code> 标签。</p>
+        <textarea id="setting-prompt" class="setting-textarea" rows="12"
+                  spellcheck="false"></textarea>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button id="setting-reset-btn" class="btn-secondary">恢复默认</button>
+      <button id="setting-save-btn" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
