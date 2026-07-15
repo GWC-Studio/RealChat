@@ -11,6 +11,7 @@ import json
 import uuid
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -38,6 +39,21 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # ============================================================
 
 PUBLIC_PATHS = {"/api/auth", "/api/auth-status"}
+AUTH_FAIL_MSG = "认证失败"  # 统一错误，不区分无token/错token
+
+# 简易速率限制：内存存储
+_auth_rate_limit: dict[str, list[float]] = {}
+_AUTH_RATE_WINDOW = 60     # 窗口秒数
+_AUTH_RATE_MAX = 10        # 窗口内最大尝试次数
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """注入安全响应头"""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -46,10 +62,10 @@ async def auth_middleware(request: Request, call_next):
     if not AUTH_TOKEN or not path.startswith("/api/") or path in PUBLIC_PATHS:
         return await call_next(request)
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return JSONResponse(status_code=401, content={"detail": "请提供认证令牌"})
-    if auth[7:] != AUTH_TOKEN:
-        return JSONResponse(status_code=403, content={"detail": "令牌无效"})
+    if not auth.startswith("Bearer ") or len(auth) < 8:
+        return JSONResponse(status_code=401, content={"detail": AUTH_FAIL_MSG})
+    if not secrets.compare_digest(auth[7:], AUTH_TOKEN):
+        return JSONResponse(status_code=401, content={"detail": AUTH_FAIL_MSG})
     return await call_next(request)
 
 # ============================================================
@@ -480,14 +496,29 @@ async def api_auth_status():
 
 @app.post("/api/auth")
 async def api_auth_login(req: Request):
-    """验证令牌并返回结果"""
+    """验证令牌（带速率限制，防爆破）"""
+    client_ip = req.client.host if req.client else "unknown"
+    now = time.time()
+
+    # 速率限制检查
+    if client_ip not in _auth_rate_limit:
+        _auth_rate_limit[client_ip] = []
+    timestamps = _auth_rate_limit[client_ip]
+    timestamps[:] = [t for t in timestamps if now - t < _AUTH_RATE_WINDOW]
+    if len(timestamps) >= _AUTH_RATE_MAX:
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
+    timestamps.append(now)
+    # 清理过期条目
+    if len(_auth_rate_limit) > 1000:
+        _auth_rate_limit.clear()
+
     body = await req.json()
     token = body.get("token", "").strip()
     if not AUTH_TOKEN:
         return {"status": "ok", "message": "无需认证"}
-    if token == AUTH_TOKEN:
+    if token and secrets.compare_digest(token, AUTH_TOKEN):
         return {"status": "ok"}
-    raise HTTPException(403, "令牌无效")
+    raise HTTPException(401, AUTH_FAIL_MSG)
 
 # ---- 核心聊天 ----
 

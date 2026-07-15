@@ -97,7 +97,7 @@ async function authFetch(url, options = {}) {
         options.headers['Authorization'] = 'Bearer ' + authToken;
     }
     const resp = await fetch(url, options);
-    if (resp.status === 401 || resp.status === 403) {
+    if (resp.status === 401) {
         authToken = '';
         sessionStorage.removeItem('realchat_token');
         showLogin();
