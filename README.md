@@ -102,8 +102,14 @@ RealChat/
 ## 🛡️ 安全说明
 
 - `data/` 目录已加入 `.gitignore`，不会提交到 Git
-- API Key 和 Auth Token 存储在 `data/settings.json`，建议设置文件权限 `chmod 600`
+- API Key 和 Auth Token 存储在 `data/settings.json`，建议设置文件权限：
+  ```bash
+  chmod 600 data/settings.json
+  ```
 - 部署到公网时务必设置 `REALCHAT_AUTH_TOKEN` 启用鉴权
+- 速率限制：`/api/auth` 每 IP 每 60 秒最多 10 次尝试
+- Token 比对使用恒定时间算法，防止时序攻击
+- 所有 API 错误统一返回，不泄露内部细节
 
 ## 📄 License
 

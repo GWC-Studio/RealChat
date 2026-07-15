@@ -45,6 +45,16 @@ AUTH_FAIL_MSG = "认证失败"  # 统一错误，不区分无token/错token
 _auth_rate_limit: dict[str, list[float]] = {}
 _AUTH_RATE_WINDOW = 60     # 窗口秒数
 _AUTH_RATE_MAX = 10        # 窗口内最大尝试次数
+MAX_BODY_SIZE = 256 * 1024  # 256KB 请求体上限
+
+@app.middleware("http")
+async def body_size_middleware(request: Request, call_next):
+    """限制请求体大小，防止大 payload 攻击"""
+    if request.method in ("POST", "PUT", "PATCH"):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_BODY_SIZE:
+            return JSONResponse(status_code=413, content={"detail": "请求体过大"})
+    return await call_next(request)
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
@@ -53,6 +63,16 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # CSP：允许本站脚本/样式/图片
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self'"
+    )
     return response
 
 @app.middleware("http")
