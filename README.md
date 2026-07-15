@@ -107,4 +107,4 @@ RealChat/
 
 ## 📄 License
 
-MIT
+GPLv3
