@@ -11,6 +11,7 @@ import json
 import uuid
 import logging
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -45,7 +46,10 @@ AUTH_FAIL_MSG = "认证失败"  # 统一错误，不区分无token/错token
 _auth_rate_limit: dict[str, list[float]] = {}
 _AUTH_RATE_WINDOW = 60     # 窗口秒数
 _AUTH_RATE_MAX = 10        # 窗口内最大尝试次数
+_STREAM_RATE_MAX = 20      # 流式请求每 60 秒上限
+_stream_rate_limit: dict[str, list[float]] = {}
 MAX_BODY_SIZE = 256 * 1024  # 256KB 请求体上限
+MAX_MESSAGE_LENGTH = 10000   # 单条消息最大字符数
 
 @app.middleware("http")
 async def body_size_middleware(request: Request, call_next):
@@ -310,6 +314,15 @@ async def stream_and_parse(
         "maximum":    {"budget_tokens": 16384},
     }
 
+    # 清洗用户输入：移除可能被误解析的标签，防止提示注入
+    user_text = re.sub(r'</?thinking>', '', user_text, flags=re.IGNORECASE)
+    user_text = re.sub(r'</?para>', '', user_text, flags=re.IGNORECASE)
+    user_text = user_text.strip()
+
+    if not user_text:
+        logger.warning("user input empty after sanitization")
+        return
+
     settings = get_current_settings()
     messages = store.get_history_for_api(session_id, settings["system_prompt"])
     messages.append({"role": "user", "content": user_text})
@@ -388,8 +401,8 @@ async def stream_and_parse(
             async with client.stream("POST", f"{settings['api_base_url']}/chat/completions",
                                      headers=headers, json=payload) as resp:
                 if resp.status_code != 200:
-                    body = await resp.aread()
-                    yield sse("error", {"message": f"API 错误 {resp.status_code}: {body.decode()[:200]}"})
+                    logger.error(f"API error {resp.status_code}", exc_info=False)
+                    yield sse("error", {"message": f"AI 服务返回错误 ({resp.status_code})，请检查 API Key 和 Base URL"})
                     return
 
                 async for line in resp.aiter_lines():
@@ -486,9 +499,8 @@ async def stream_and_parse(
                     if ev: yield ev
 
                 if not para_emitted and ai_full_text.strip():
-                    import re as _re
-                    clean = _re.sub(r'</?thinking>', '', ai_full_text)
-                    clean = _re.sub(r'</?para>', '', clean).strip()
+                    clean = re.sub(r'</?thinking>', '', ai_full_text)
+                    clean = re.sub(r'</?para>', '', clean).strip()
                     if clean:
                         yield emit_para(clean)
 
@@ -498,9 +510,10 @@ async def stream_and_parse(
         yield sse("error", {"message": "无法连接到 API 服务器"})
     except httpx.TimeoutException:
         yield sse("error", {"message": "请求超时"})
-    except Exception as e:
-        logger.exception("stream error")
-        yield sse("error", {"message": str(e)})
+    except Exception:
+        # 不记录完整 traceback，避免 API Key 泄露到日志
+        logger.error("stream error", exc_info=False)
+        yield sse("error", {"message": "服务内部错误，请稍后重试"})
 
 
 # ============================================================
@@ -545,10 +558,29 @@ async def api_auth_login(req: Request):
 @app.post("/api/stream")
 async def api_stream(req: Request):
     """核心接口：发送消息并返回 SSE 流"""
+    # 流式端点速率限制
+    client_ip = req.client.host if req.client else "unknown"
+    now = time.time()
+    if client_ip not in _stream_rate_limit:
+        _stream_rate_limit[client_ip] = []
+    stamps = _stream_rate_limit[client_ip]
+    stamps[:] = [t for t in stamps if now - t < _AUTH_RATE_WINDOW]
+    if len(stamps) >= _STREAM_RATE_MAX:
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
+    stamps.append(now)
+
     body = await req.json()
     user_input = body.get("user_input", "").strip()
-    user_segments = body.get("user_segments", [])  # 前端传来的独立消息列表
-    session_id = body.get("session_id", "")
+    user_segments = body.get("user_segments", [])
+    session_id = body.get("session_id", "").strip()
+
+    # 消息长度限制
+    if len(user_input) > MAX_MESSAGE_LENGTH:
+        raise HTTPException(400, f"消息过长，限制 {MAX_MESSAGE_LENGTH} 字符")
+
+    # session_id 格式校验
+    if session_id and not re.match(r'^[a-f0-9]{8}$', session_id):
+        raise HTTPException(400, "会话 ID 格式无效")
 
     if not user_input:
         raise HTTPException(400, "用户输入不能为空")
