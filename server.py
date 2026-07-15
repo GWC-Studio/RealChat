@@ -28,6 +28,9 @@ from config import (
     HOST, PORT, DEFAULT_SYSTEM_PROMPT,
     DEFAULT_THINKING_LEVEL, AUTH_TOKEN
 )
+from discussion import (
+    create_room, get_room, list_rooms, DEFAULT_AGENTS,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("realchat")
@@ -39,7 +42,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # 令牌鉴权中间件
 # ============================================================
 
-PUBLIC_PATHS = {"/api/auth", "/api/auth-status"}
+PUBLIC_PATHS = {"/api/auth", "/api/auth-status", "/api/discussion/agents"}
 AUTH_FAIL_MSG = "认证失败"  # 统一错误，不区分无token/错token
 
 # 简易速率限制：内存存储
@@ -720,6 +723,120 @@ async def api_save_settings(req: Request):
 
     save_settings(current)
     return {"status": "ok", "model": current["model"]}
+
+
+# ============================================================
+# 多智能体群聊 API
+# ============================================================
+
+@app.get("/api/discussion/agents")
+async def api_list_agents():
+    """获取预设角色列表"""
+    return {"agents": DEFAULT_AGENTS}
+
+
+@app.post("/api/discussion/start")
+async def api_start_discussion(req: Request):
+    """启动一场多 AI 讨论"""
+    body = await req.json()
+    topic = body.get("topic", "").strip()
+    agent_names = body.get("agents", [])  # 选中的 agent 名字列表
+    max_rounds = min(body.get("max_rounds", 6), 20)
+    token_limit = min(body.get("token_limit", 8000), 32000)
+
+    if not topic:
+        raise HTTPException(400, "讨论主题不能为空")
+
+    settings = get_current_settings()
+    api_key = settings.get("api_key") or API_KEY
+    if not api_key:
+        raise HTTPException(400, "请先配置 API Key")
+
+    # 筛选选中的 agent
+    if agent_names:
+        agents = [a for a in DEFAULT_AGENTS if a["name"] in agent_names]
+    else:
+        agents = DEFAULT_AGENTS[:3]  # 默认 3 个
+
+    if len(agents) < 2:
+        raise HTTPException(400, "至少需要 2 个角色参与讨论")
+
+    room = create_room(
+        agents=agents,
+        topic=topic,
+        api_base=settings["api_base_url"],
+        api_key=api_key,
+        model=settings["model"],
+        max_rounds=max_rounds,
+        token_limit=token_limit,
+        temperature=body.get("temperature", 1.1),
+        top_p=body.get("top_p", 0.9),
+    )
+
+    return {
+        "room_id": room.room_id,
+        "agents": [{"name": a["name"], "emoji": a["emoji"], "color": a["color"]} for a in agents],
+        "topic": topic,
+    }
+
+
+@app.get("/api/discussion/stream")
+async def api_discussion_stream(req: Request, room_id: str = ""):
+    """SSE 流：实时获取讨论事件"""
+    room = get_room(room_id)
+    if not room:
+        raise HTTPException(404, "讨论房间不存在")
+
+    async def event_stream():
+        async for evt in room.run_discussion():
+            yield f"data: {evt}\n\n"
+        yield "data: {\"type\": \"stream_end\"}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/discussion/interrupt")
+async def api_discussion_interrupt(req: Request):
+    """用户在讨论中发消息（插嘴）"""
+    body = await req.json()
+    room_id = body.get("room_id", "").strip()
+    message = body.get("message", "").strip()
+
+    if not message:
+        raise HTTPException(400, "消息不能为空")
+    if len(message) > 2000:
+        raise HTTPException(400, "消息过长")
+
+    room = get_room(room_id)
+    if not room:
+        raise HTTPException(404, "讨论房间不存在")
+
+    room.user_interrupt(message)
+    return {"status": "ok", "queued": len(room.pending_user_msgs)}
+
+
+@app.post("/api/discussion/abort")
+async def api_discussion_abort(req: Request):
+    """强制中断讨论"""
+    body = await req.json()
+    room_id = body.get("room_id", "").strip()
+
+    room = get_room(room_id)
+    if not room:
+        raise HTTPException(404, "讨论房间不存在")
+
+    room.abort()
+    return {"status": "ok"}
+
+
+@app.get("/api/discussion/rooms")
+async def api_list_discussion_rooms():
+    """列出活跃讨论房间"""
+    return {"rooms": list_rooms()}
 
 
 # 静态文件

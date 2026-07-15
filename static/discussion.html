@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RealChat 群聊讨论</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/discussion.css">
+</head>
+<body>
+<div id="app" class="discussion-app">
+
+  <!-- 顶部设置栏 -->
+  <div id="discussion-setup" class="discussion-setup">
+    <div class="setup-left">
+      <a href="/" class="back-btn" title="返回单聊">← 返回</a>
+      <h2>💬 群聊讨论</h2>
+    </div>
+    <div class="setup-form" id="setup-form">
+      <input type="text" id="topic-input" class="topic-input"
+             placeholder="输入讨论主题，如"先有鸡还是先有蛋？"">
+      <div id="agent-selector" class="agent-selector"></div>
+      <div class="setup-actions">
+        <select id="max-rounds-select" class="rounds-select">
+          <option value="4">4 轮</option>
+          <option value="6" selected>6 轮</option>
+          <option value="8">8 轮</option>
+          <option value="10">10 轮</option>
+        </select>
+        <button id="start-btn" class="start-btn" disabled>🚀 开始讨论</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 发言状态条 -->
+  <div id="status-bar-discussion" class="status-bar-discussion hidden">
+    <span id="status-icon">💬</span>
+    <span id="status-text-discussion">准备中...</span>
+    <span id="status-rounds" class="status-rounds"></span>
+  </div>
+
+  <!-- 消息区 -->
+  <div id="discussion-messages" class="discussion-messages">
+    <div class="welcome-msg">
+      <h2>💬 群聊讨论模式</h2>
+      <p>选择 AI 角色，设定讨论主题，观看他们各抒己见</p>
+      <p class="welcome-tip">你可以随时插嘴参与讨论 💬</p>
+    </div>
+  </div>
+
+  <!-- 输入区 -->
+  <div id="input-area-discussion" class="input-area-discussion hidden">
+    <div class="input-row-discussion">
+      <input type="text" id="interrupt-input" class="interrupt-input"
+             placeholder="插嘴说点什么..." disabled>
+      <button id="interrupt-btn" class="interrupt-btn" disabled>💬 插嘴</button>
+      <button id="abort-btn" class="abort-btn hidden">⏹ 停止</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="/discussion.js"></script>
+</body>
+</html>
