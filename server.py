@@ -676,7 +676,7 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"\n🦞 RealChat v2 启动")
+    print(f"\nRealChat v2 启动")
     print(f"   地址: http://{HOST}:{PORT}")
     print(f"   API : {API_BASE_URL}")
     print(f"   模型: {MODEL}")

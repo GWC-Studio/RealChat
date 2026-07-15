@@ -573,7 +573,7 @@ async function newChat() {
 
     // 清空聊天区
     DOM.messages.innerHTML = `<div class="welcome-msg">
-        <h2>🦞 RealChat</h2>
+        <h2>RealChat</h2>
         <p>像真人聊天一样，分条发送，AI 耐心倾听</p>
     </div>`;
     removeThinkBubble();
@@ -609,7 +609,7 @@ async function deleteChat(sid) {
             // 删除的是当前会话 → 新建一个空会话
             sessionId = '';
             DOM.messages.innerHTML = `<div class="welcome-msg">
-                <h2>🦞 RealChat</h2>
+                <h2>RealChat</h2>
                 <p>像真人聊天一样，分条发送，AI 耐心倾听</p>
             </div>`;
             removeThinkBubble();
@@ -927,7 +927,7 @@ async function clearCurrentChat() {
 
     sessionId = '';
     DOM.messages.innerHTML = `<div class="welcome-msg">
-        <h2>🦞 RealChat</h2>
+        <h2>RealChat</h2>
         <p>像真人聊天一样，分条发送，AI 耐心倾听</p>
     </div>`;
     setState(STATE.IDLE);
@@ -991,7 +991,7 @@ async function initApp() {
     await loadChatList();
     setState(STATE.IDLE);
     DOM.messageInput.focus();
-    console.log('🦞 RealChat v2 ready');
+    console.log('RealChat v2 ready');
 }
 
 async function init() {
