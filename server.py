@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import (
     API_BASE_URL, API_KEY, MODEL,
     HOST, PORT, DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_THINKING_LEVEL, AUTH_TOKEN
+    DEFAULT_THINKING_LEVEL, AUTH_TOKEN, _TOKEN_GENERATED
 )
 from discussion import (
     create_room, get_room, list_rooms,
@@ -1104,10 +1104,14 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"\nRealChat v2 启动")
-    print(f"   地址: http://{HOST}:{PORT}")
-    print(f"   API : {API_BASE_URL}")
-    print(f"   模型: {MODEL}")
-    print(f"   存储: {SESSIONS_FILE}")
-    print()
+    import sys
+    print(f"\nRealChat v2 启动", file=sys.stderr)
+    print(f"   地址: http://{HOST}:{PORT}", file=sys.stderr)
+    print(f"   API : {API_BASE_URL}", file=sys.stderr)
+    print(f"   模型: {MODEL}", file=sys.stderr)
+    print(f"   存储: {SESSIONS_FILE}", file=sys.stderr)
+    if _TOKEN_GENERATED:
+        print(f"\n   🔐 首次部署，已自动生成网关令牌：", file=sys.stderr)
+        print(f"      {AUTH_TOKEN}", file=sys.stderr)
+        print(f"   ⚠️  请妥善保存！仅在首次部署时显示。", file=sys.stderr)
     uvicorn.run(app, host=HOST, port=PORT)

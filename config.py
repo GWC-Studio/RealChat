@@ -14,18 +14,42 @@ BUFFER_TIMEOUT = float(os.getenv("REALCHAT_BUFFER_TIMEOUT", "2.0"))
 # 深度思考等级: off / minimal / low / medium / high / extra_high / maximum
 DEFAULT_THINKING_LEVEL = os.getenv("REALCHAT_THINKING_LEVEL", "off")
 
-# 网关令牌鉴权（留空 = 不启用，直接进入聊天）
-# 优先读环境变量，fallback 到 data/settings.json 里的 auth_token
+# 网关令牌鉴权
+# 优先级：环境变量 > settings.json > 首次部署自动生成
+import secrets as _secrets
 _AUTH_ENV = os.getenv("REALCHAT_AUTH_TOKEN", "")
+_SETTINGS_DIR = os.path.join(os.path.dirname(__file__), "data")
+_SETTINGS_PATH = os.path.join(_SETTINGS_DIR, "settings.json")
+
+AUTH_TOKEN = ""
+_TOKEN_GENERATED = False
+
 if _AUTH_ENV:
     AUTH_TOKEN = _AUTH_ENV
 else:
     try:
         import json as _json
-        _settings = _json.load(open(os.path.join(os.path.dirname(__file__), "data", "settings.json")))
+        _settings = _json.load(open(_SETTINGS_PATH))
         AUTH_TOKEN = _settings.get("auth_token", "")
     except Exception:
         AUTH_TOKEN = ""
+
+    # 首次部署：/data 目录不存在 → 自动生成令牌
+    if not os.path.isdir(_SETTINGS_DIR):
+        AUTH_TOKEN = _secrets.token_hex(16)
+        _TOKEN_GENERATED = True
+        try:
+            os.makedirs(_SETTINGS_DIR, exist_ok=True)
+            _existing = {}
+            if os.path.exists(_SETTINGS_PATH):
+                _existing = _json.load(open(_SETTINGS_PATH))
+            _existing["auth_token"] = AUTH_TOKEN
+            _tmp = _SETTINGS_PATH + ".tmp"
+            with open(_tmp, "w", encoding="utf-8") as f:
+                _json.dump(_existing, f, ensure_ascii=False, indent=2)
+            os.replace(_tmp, _SETTINGS_PATH)
+        except Exception:
+            pass
 
 # 服务器配置
 HOST = os.getenv("REALCHAT_HOST", "0.0.0.0")
