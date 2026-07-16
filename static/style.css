@@ -853,3 +853,115 @@ body {
   color: #ef4444;
 }
 .auth-error.hidden { display: none; }
+
+/* ============================================================
+
+/* ============================================================
+   群聊讨论 — 集成样式 (minimal)
+   ============================================================ */
+
+/* 角色选择 chips */
+.agent-selector { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.agent-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 14px; border-radius: 20px; border: 2px solid var(--border-light);
+  font-size: 13px; cursor: pointer; user-select: none;
+  color: var(--text-secondary); background: var(--bg-tertiary);
+  transition: all 0.15s;
+}
+.agent-chip:hover { border-color: var(--accent-dim); }
+.agent-chip.selected {
+  border-color: var(--chip-color);
+  background: color-mix(in srgb, var(--chip-color) 15%, transparent);
+  color: var(--text-primary); font-weight: 500;
+}
+.agent-chip .chip-emoji { font-size: 16px; }
+
+/* Agent 发言气泡 */
+.agent-speech { text-align: left; margin-bottom: 12px; animation: msgIn 0.25s ease; }
+.agent-role-header {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; margin-bottom: 4px; padding-left: 4px;
+}
+.agent-speech .bubble {
+  display: inline-block; max-width: 80%;
+  padding: 10px 14px; border-radius: 12px 12px 12px 4px;
+  background: var(--bubble-ai-bg); color: var(--bubble-ai-text);
+  border-left: 3px solid var(--agent-color, var(--accent));
+  line-height: 1.6; font-size: 14px; word-break: break-word;
+}
+
+/* 群聊系统消息 */
+.disc-system-note { text-align: center; margin: 12px 0; font-size: 13px; }
+.disc-topic {
+  font-size: 14px; color: var(--accent); font-weight: 500;
+  padding: 10px 16px; background: var(--accent-dim); border-radius: 10px;
+}
+.disc-agents { font-size: 12px; color: var(--text-muted); }
+.disc-note { font-size: 12px; color: var(--text-muted); font-style: italic; }
+
+/* 用户插嘴 */
+.user-interject { text-align: center; margin: 14px 0; }
+.user-interject .interject-badge {
+  display: inline-block; padding: 6px 16px; border-radius: 20px;
+  background: var(--accent-dim); color: var(--accent);
+  font-size: 13px; font-weight: 500;
+}
+
+/* 总结框 */
+.summary-box {
+  margin: 20px 0; padding: 16px 20px; border-radius: 12px;
+  background: var(--bg-tertiary); border: 2px solid var(--accent);
+}
+.summary-box h3 { font-size: 15px; color: var(--accent); margin-bottom: 10px; }
+.summary-box .summary-text {
+  font-size: 14px; color: var(--text-primary); line-height: 1.7; white-space: pre-wrap;
+}
+
+/* 停止按钮 */
+.abort-btn {
+  background: transparent; border: 1px solid #ff4444; color: #ff4444;
+  border-radius: 10px; padding: 12px 16px; font-size: 14px;
+  cursor: pointer; white-space: nowrap; transition: all 0.2s;
+}
+.abort-btn:hover { background: #ff444420; }
+.abort-btn.hidden { display: none; }
+
+/* 侧边栏群聊标记 */
+.chat-item-disc-active { border-left: 3px solid var(--accent); }
+.chat-item-disc-completed { opacity: 0.8; }
+
+/* 讨论创建模态框内联样式 */
+#disc-agent-selector { min-height: 40px; }
+#disc-topic-input {
+  width: 100%; background: var(--bg-input); border: 1px solid var(--border-light);
+  border-radius: 10px; padding: 12px 16px; color: var(--text-primary);
+  font-size: 15px; outline: none; box-sizing: border-box; margin-bottom: 10px;
+}
+#disc-topic-input:focus { border-color: var(--accent); }
+#disc-max-rounds {
+  background: var(--bg-input); border: 1px solid var(--border-light);
+  border-radius: 8px; padding: 8px 12px; color: var(--text-primary); font-size: 13px;
+}
+
+/* 排队消息 */
+.interject-badge.interjected {
+  background: #2ecc7120; border: 1px solid #2ecc71; color: #2ecc71;
+  transition: all 0.3s ease;
+}
+
+/* 导出选择列表 */
+.export-session-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
+  transition: background 0.15s;
+}
+.export-session-row:hover { background: var(--bg-hover); }
+.export-session-row .export-check { flex-shrink: 0; accent-color: var(--accent); }
+.export-session-row .export-title {
+  flex: 1; font-size: 13px; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.export-session-row .export-meta {
+  font-size: 11px; color: var(--text-muted); flex-shrink: 0;
+}

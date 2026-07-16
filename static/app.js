@@ -557,6 +557,8 @@ async function newChat() {
     if (streamAbort) streamAbort.abort();
     cancelTimer();
     bufferMsgs = [];
+    window.__DISC_ROOM_ID = '';
+    window.__DISC_ACTIVE = false;
 
     // 创建新会话
     try {
@@ -830,8 +832,8 @@ function parseSSE(raw) {
         if (line.startsWith('event: ')) evType = line.slice(7).trim();
         else if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
     }
-    if (!evType || !dataStr) return null;
-    try { return { type: evType, data: JSON.parse(dataStr) }; } catch { return null; }
+    if (!dataStr) return null;
+    try { const data = JSON.parse(dataStr); if (!evType) evType = data.type || "message"; return { type: evType, data }; } catch { return null; }
 }
 
 function handleSSEEvent(ev) {
@@ -864,6 +866,29 @@ function sendMessage() {
     const input = DOM.messageInput;
     const text = input.value.trim();
     if (!text) return;
+
+    // ── 讨论路由（内联，不依赖 override 链）──
+    if (window.__DISC_ROOM_ID) {
+        if (window.__REALCHAT_DEBUG) console.log('[disc] sendMessage → discussion', window.__DISC_ACTIVE, window.__DISC_ROOM_ID);
+        const welcome = DOM.messages.querySelector('.welcome-msg');
+        if (welcome) welcome.remove();
+        input.value = '';
+        renderMsg('user', text);
+        scrollBottom();
+        if (window.__DISC_ACTIVE) {
+            const qEl = document.createElement('div');
+            qEl.className = 'user-interject';
+            qEl.innerHTML = '<span class="interject-badge">⏳ 排队中：' + esc(text.substring(0,50)) + '</span>';
+            DOM.messages.appendChild(qEl);
+            scrollBottom();
+            authFetch('/api/discussion/interrupt', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({room_id:window.__DISC_ROOM_ID,message:text}) }).catch(function(){});
+        } else {
+            window.__DISC_ACTIVE = true;
+            enterDiscInputMode();
+            connectDiscStream(text);
+        }
+        return;
+    }
 
     // 隐藏欢迎页
     const welcome = DOM.messages.querySelector('.welcome-msg');
@@ -980,6 +1005,421 @@ document.querySelector('.done-cmd')?.addEventListener('click', () => {
     sendMessage();
 });
 
+
+// ============================================================
+// 群聊支持 — 集成到现有渲染管线 (无 override)
+// ============================================================
+
+window.__DISC_ACTIVE = false;
+window.__DISC_ROOM_ID = '';
+window.__DISC_SESSION_ID = '';
+window.__DISC_ABORT = null;
+
+// ── 辅助渲染 ──
+function renderAgentMsg(agent, text) {
+    const el = document.createElement('div');
+    el.className = 'message agent-speech';
+    el.innerHTML = `<div class="agent-role-header" style="color:${esc(agent.color||'#888')}">${esc(agent.emoji||'')} ${esc(agent.name||'')}</div>
+                    <div class="bubble" style="--agent-color:${esc(agent.color||'#6c63ff')}">${esc(text)}</div>`;
+    DOM.messages.appendChild(el);
+    scrollBottom();
+}
+function renderAgentThinking(agent) {
+    removeThinkBubble();
+    createThinkBubble();
+    const hdr = thinkBubble.querySelector('.thinking-header');
+    if (hdr) hdr.innerHTML = `🧠 ${esc(agent.emoji||'')} ${esc(agent.name||'')} 的思考 <span class="arrow">▶</span>`;
+}
+function renderDiscSystemMsg(type, text) {
+    const el = document.createElement('div');
+    el.className = 'disc-system-note disc-' + type;
+    el.innerHTML = text;
+    DOM.messages.appendChild(el);
+    scrollBottom();
+}
+function renderDiscSummary(text) {
+    const el = document.createElement('div');
+    el.className = 'summary-box';
+    el.innerHTML = `<h3>📊 讨论总结</h3><div class="summary-text">${esc(text)}</div>`;
+    DOM.messages.appendChild(el);
+    scrollBottom();
+}
+
+// ── 输入模式 ──
+function enterDiscInputMode() {
+    DOM.messageInput.disabled = false;
+    DOM.sendBtn.disabled = false;
+    DOM.messageInput.placeholder = '插嘴说点什么...';
+    DOM.sendBtn.textContent = '💬 插嘴';
+    let btn = document.getElementById('disc-abort-btn');
+    if (!btn) {
+        btn = document.createElement('button'); btn.id = 'disc-abort-btn';
+        btn.className = 'abort-btn'; btn.textContent = '⏹ 停止'; btn.title = '中断讨论';
+        btn.addEventListener('click', abortDiscussion);
+        const row = document.getElementById('input-row');
+        if (row) row.appendChild(btn);
+    }
+    btn.classList.remove('hidden');
+}
+function exitDiscInputMode() {
+    DOM.messageInput.placeholder = '输入消息...';
+    DOM.sendBtn.textContent = '发送';
+    const btn = document.getElementById('disc-abort-btn');
+    if (btn) btn.classList.add('hidden');
+    window.__DISC_ACTIVE = false;
+}
+async function abortDiscussion() {
+    if (!window.__DISC_ROOM_ID) return;
+    window.__DISC_ACTIVE = false;
+    if (window.__DISC_ABORT) window.__DISC_ABORT.abort();
+    try { await authFetch('/api/discussion/abort', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({room_id:window.__DISC_ROOM_ID}) }); } catch {}
+    exitDiscInputMode(); setState(STATE.IDLE); await loadChatList();
+}
+
+// ── SSE 处理 ──
+const _origHandleSSE = handleSSEEvent;
+handleSSEEvent = function(ev) {
+    const d = ev.data || {};
+    // 新 agent 开始思考：清除上一个 agent 的思考气泡
+    if (ev.type === 'thinking_char' && d.agent) {
+        if (!thinkBubble || (window.__DISC_ACTIVE && thinkBubble._agentName !== d.agent.name)) {
+            removeThinkBubble();
+            renderAgentThinking(d.agent);
+            if (thinkBubble) thinkBubble._agentName = d.agent.name;
+        }
+        thinkBody.textContent += (d.char || ''); scrollBottom(); return;
+    }
+    if (ev.type === 'thinking_done' && d.agent) { return; }
+    if (ev.type === 'para' && d.agent) {
+        // 安全拆分：一段 <para> 可能包含多段文字（LLM 不总是遵守格式）
+        const paras = (d.text || '').split(/\n{2,}/).filter(p => p.trim());
+        for (const p of paras) renderAgentMsg(d.agent, p);
+        return;
+    }
+    if (ev.type === 'done' && d.discussion) {
+        window.__DISC_ACTIVE = d.discussion.status === 'active';
+        removeStatusMsg();
+        if (!window.__DISC_ACTIVE) {
+            exitDiscInputMode();
+            DOM.messageInput.disabled = false; DOM.sendBtn.disabled = false;
+            DOM.messageInput.placeholder = '输入消息...'; DOM.sendBtn.textContent = '发送';
+            setState(STATE.IDLE);
+            if (d.discussion.summary) renderDiscSummary(d.discussion.summary);
+        }
+        if (d.session_id && !sessionId) sessionId = d.session_id;
+        return;
+    }
+    // 用户插嘴被处理 → 更新排队状态 + 显示消息
+    if (ev.type === 'user_interject') {
+        // 将排队中的 indicator 替换为实际消息
+        const pending = DOM.messages.querySelector('.interject-badge');
+        if (pending && pending.textContent.includes('排队中')) {
+            pending.textContent = '📨 ' + (d.text || '').substring(0, 80);
+            pending.parentElement.classList.add('interjected');
+        } else {
+            renderMsg('user', '📨 ' + (d.text || ''));
+        }
+        scrollBottom();
+        // 更新状态提示
+        if (d.note) addStatusMsg(d.note);
+        return;
+    }
+    if (ev.type === 'system_note') { addStatusMsg(d.text||''); return; }
+    if (ev.type === 'security_warning') {
+        renderDiscSystemMsg('warning', '🚨 '+(d.message||'')); window.__DISC_ACTIVE=false; exitDiscInputMode(); return;
+    }
+    _origHandleSSE(ev);
+};
+
+// ── 流连接 ──
+async function connectDiscStream(userMessage) {
+    window.__DISC_ABORT = new AbortController();
+    try {
+        const body = { room_id: window.__DISC_ROOM_ID, session_id: window.__DISC_SESSION_ID };
+        if (userMessage) body.user_message = userMessage;
+        const resp = await authFetch('/api/discussion/session-stream', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(body), signal: window.__DISC_ABORT.signal,
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail || `HTTP ${resp.status}`);
+        const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buf = '';
+        setState(STATE.STREAMING); removeThinkBubble(); removeStatusMsg(); addStatusMsg('AI 讨论中…');
+        // 讨论模式：保持输入可用，允许随时插嘴
+        DOM.messageInput.disabled = false;
+        DOM.sendBtn.disabled = false;
+        while (true) {
+            const { done, value } = await reader.read(); if (done) break;
+            buf += decoder.decode(value, {stream:true});
+            const parts = buf.split('\n\n'); buf = parts.pop()||'';
+            for (const p of parts) { const ev = parseSSE(p); if (ev) handleSSEEvent(ev); }
+        }
+        if (buf.trim()) { const ev = parseSSE(buf); if (ev) handleSSEEvent(ev); }
+    } catch (err) {
+        if (err.name !== 'AbortError') { console.error('Disc stream:',err); removeStatusMsg(); renderDiscSystemMsg('note','⚠️ 讨论流中断'); }
+    } finally {
+        window.__DISC_ABORT = null; removeStatusMsg();
+        if (!window.__DISC_ACTIVE) { setState(STATE.IDLE); }
+        await loadChatList();
+    }
+}
+
+// ── (sendMessage 已内联到原始函数，不需要 override) ──
+
+// ── callStreamAPI 讨论拦截 ──
+const _origCallStreamAPI = callStreamAPI;
+callStreamAPI = async function(userInput, userSegments) {
+    if (window.__DISC_ACTIVE && window.__DISC_ROOM_ID) return;
+    await _origCallStreamAPI(userInput, userSegments);
+};
+
+// ── switchToChat 讨论历史 ──
+const _origSwitchToChat = switchToChat;
+switchToChat = async function(sid) {
+    if (window.__DISC_ACTIVE) await abortDiscussion();
+    try {
+        const resp = await authFetch(`/api/sessions/${sid}`);
+        if (!resp.ok) throw new Error('Not found');
+        const data = await resp.json();
+        DOM.messages.innerHTML = ''; removeThinkBubble(); removeStatusMsg();
+
+        if (data.type === 'discussion') {
+            window.__DISC_SESSION_ID = sid;
+            const msgs = data.messages || [];
+            for (const m of msgs) {
+                if (m.role === 'system') {
+                    if (m.type === 'topic') renderDiscSystemMsg('topic', `📋 讨论主题：<b>${esc(m.content)}</b>`);
+                    else if (m.type === 'agents') renderDiscSystemMsg('agents', m.content);
+                    else if (m.type === 'summary') renderDiscSummary(m.content);
+                    else renderDiscSystemMsg('note', m.content);
+                } else if (m.role === 'agent') {
+                    const agent = m.agent || { name: m.agent_name||'', emoji: m.agent_emoji||'', color: m.agent_color||'#888' };
+                    if (m.type === 'thinking') addThinkBubbleFromHistory(m.content);
+                    else renderAgentMsg(agent, m.content);
+                } else if (m.role === 'user') {
+                    renderMsg('user', m.content);
+                }
+            }
+            // 活跃讨论不自动恢复 — 让用户手动发下一条消息触发新一轮
+            window.__DISC_ACTIVE = false;
+            window.__DISC_ROOM_ID = data.discussion?.room_id || '';
+            window.__DISC_SESSION_ID = sid;
+            DOM.messageInput.disabled = false;
+            DOM.sendBtn.disabled = false;
+            DOM.messageInput.placeholder = '输入消息继续讨论...';
+            DOM.sendBtn.textContent = '发送';
+        } else {
+            window.__DISC_ROOM_ID = '';
+            window.__DISC_ACTIVE = false;
+            DOM.messageInput.disabled = false; DOM.sendBtn.disabled = false; exitDiscInputMode();
+            const msgs = data.messages || [];
+            if (msgs.length > 0) {
+                for (const msg of msgs) {
+                    if (msg.role === 'user') renderMsg('user', msg.content);
+                    else if (msg.role === 'assistant') {
+                        if (msg.type === 'thinking') addThinkBubbleFromHistory(msg.content);
+                        else renderMsg('ai', msg.content);
+                    }
+                }
+            } else {
+                for (const msg of data.history || []) {
+                    if (msg.role === 'user') renderMsg('user', msg.content);
+                    else if (msg.role === 'assistant') renderParsedAI(msg.content);
+                }
+            }
+        }
+        sessionId = sid; setState(STATE.IDLE); await loadChatList(); scrollBottom();
+    } catch (err) { console.error('Failed to switch chat:', err); }
+};
+
+// ── renderChatList 群聊图标 ──
+const _origRenderChatList = renderChatList;
+renderChatList = function(sessions) {
+    const list = DOM.chatList; list.innerHTML = ''; if (!sessions.length) return;
+    for (const s of sessions) {
+        const el = document.createElement('div');
+        const isActiveDisc = s.type === 'discussion' && s.discussion_status === 'active';
+        el.className = 'chat-item' + (s.id===sessionId?' active':'') + (isActiveDisc?' chat-item-disc-active':'') + (s.type==='discussion'&&s.discussion_status==='completed'?' chat-item-disc-completed':'');
+        el.dataset.id = s.id;
+        const prefix = s.type === 'discussion' ? (isActiveDisc ? '💬 ' : '📋 ') : '';
+        el.innerHTML = `<span class="chat-title" title="${esc(s.title)}">${esc(prefix+s.title)}</span>
+            <span class="chat-meta"><span class="chat-time">${fmtDate(s.updated_at)}</span>
+            <span class="chat-actions">
+                <button class="chat-action-btn rename-btn" title="重命名">✏️</button>
+                <button class="chat-action-btn delete-btn" title="删除">🗑️</button>
+            </span></span>`;
+        el.querySelector('.chat-title')?.addEventListener('click', () => switchToChat(s.id));
+        el.addEventListener('click', (e) => { if (e.target.closest('.chat-action-btn')) return; switchToChat(s.id); });
+        el.querySelector('.rename-btn')?.addEventListener('click', (e) => { e.stopPropagation(); renameChat(s.id, s.title); });
+        el.querySelector('.delete-btn')?.addEventListener('click', (e) => { e.stopPropagation(); deleteChat(s.id); });
+        list.appendChild(el);
+    }
+};
+
+// ── 创建模态框 ──
+let DISC_SELECTED_AGENTS = new Set();
+function $d(id) { return document.getElementById(id); }
+
+async function openDiscModal() {
+    $d('discussion-create-modal').classList.remove('hidden');
+    DISC_SELECTED_AGENTS.clear();
+    $d('disc-agent-selector').innerHTML = '<p style="font-size:13px;color:var(--text-muted);">加载角色中…</p>';
+    $d('disc-start-btn').disabled = true;
+    try { const r = await authFetch('/api/discussion/agents'); renderDiscAgentChips((await r.json()).agents||[]); } catch {}
+}
+function closeDiscModal() { $d('discussion-create-modal').classList.add('hidden'); }
+function renderDiscAgentChips(agents) {
+    const ct = $d('disc-agent-selector'); ct.innerHTML = ''; DISC_SELECTED_AGENTS.clear();
+    agents.forEach((a,i) => {
+        const chip = document.createElement('div');
+        chip.className = 'agent-chip' + (i<3?' selected':'');
+        chip.style.setProperty('--chip-color', a.color);
+        chip.dataset.name = a.name;
+        chip.innerHTML = `<span class="chip-emoji">${esc(a.emoji)}</span> ${esc(a.name)}`;
+        chip.addEventListener('click', () => {
+            if (DISC_SELECTED_AGENTS.has(a.name)) { DISC_SELECTED_AGENTS.delete(a.name); chip.classList.remove('selected'); }
+            else { DISC_SELECTED_AGENTS.add(a.name); chip.classList.add('selected'); }
+            $d('disc-start-btn').disabled = DISC_SELECTED_AGENTS.size < 2;
+        });
+        ct.appendChild(chip); if (i<3) DISC_SELECTED_AGENTS.add(a.name);
+    });
+    $d('disc-start-btn').disabled = DISC_SELECTED_AGENTS.size < 2;
+}
+
+$d('discussion-modal-btn')?.addEventListener('click', openDiscModal);
+$d('disc-start-btn')?.addEventListener('click', startDiscussion);
+$d('disc-create-close')?.addEventListener('click', closeDiscModal);
+$d('disc-create-cancel')?.addEventListener('click', closeDiscModal);
+
+async function startDiscussion() {
+    const agentNames = [...DISC_SELECTED_AGENTS];
+    const maxRounds = parseInt($d('disc-max-rounds').value);
+    if (agentNames.length < 2) return;
+    try {
+        const title = agentNames.slice(0,3).join('、') + ' 的群聊';
+        const resp = await authFetch('/api/discussion/start', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ topic: title, agents: agentNames, max_rounds: maxRounds }),
+        });
+        if (!resp.ok) { alert((await resp.json()).detail); return; }
+        const data = await resp.json(); closeDiscModal();
+
+        sessionId = data.session_id; window.__DISC_ROOM_ID = data.room_id; window.__DISC_SESSION_ID = data.session_id;
+        if (window.__REALCHAT_DEBUG) console.log('[disc] Session created', window.__DISC_ROOM_ID, sessionId);
+        window.__DISC_ACTIVE = false;
+        DOM.messages.innerHTML = ''; removeThinkBubble(); removeStatusMsg();
+        renderDiscSystemMsg('agents', `参与角色：${data.agents.map(a=>a.emoji+a.name).join('、')}`);
+        renderDiscSystemMsg('note', '在下方输入框发送第一条消息来开始讨论');
+        DOM.messageInput.disabled = false; DOM.sendBtn.disabled = false;
+        DOM.messageInput.placeholder = '输入消息...'; DOM.messageInput.focus();
+        await loadChatList();
+    } catch (err) { console.error('Start discussion failed:', err); }
+}
+
+$d('discussion-create-modal')?.addEventListener('click', e => {
+    if (e.target === $d('discussion-create-modal')) closeDiscModal();
+});
+
+// ============================================================
+// 导入导出
+// ============================================================
+
+// 导出 — 弹出选择窗口
+$d('export-btn')?.addEventListener('click', async () => {
+    const modal = $d('export-modal');
+    const list = $d('export-session-list');
+    list.innerHTML = '<p style="font-size:13px;color:var(--text-muted);">加载中…</p>';
+    modal.classList.remove('hidden');
+
+    try {
+        const resp = await authFetch('/api/sessions');
+        const data = await resp.json();
+        const sessions = data.sessions || [];
+
+        if (sessions.length === 0) {
+            list.innerHTML = '<p style="font-size:13px;color:var(--text-muted);text-align:center;padding:20px;">没有可导出的会话</p>';
+            return;
+        }
+
+        list.innerHTML = '';
+        sessions.forEach(s => {
+            const row = document.createElement('label');
+            row.className = 'export-session-row';
+            const prefix = s.type === 'discussion' ? '💬 ' : '';
+            const count = s.msg_count || 0;
+            row.innerHTML = `
+                <input type="checkbox" class="export-check" value="${esc(s.id)}" checked>
+                <span class="export-title">${esc(prefix + s.title)}</span>
+                <span class="export-meta">${count} 条 · ${fmtDate(s.updated_at)}</span>
+            `;
+            list.appendChild(row);
+        });
+    } catch (err) {
+        list.innerHTML = '<p style="color:#ef4444;">加载失败</p>';
+    }
+});
+
+$d('export-modal-close')?.addEventListener('click', () => $d('export-modal').classList.add('hidden'));
+$d('export-cancel-btn')?.addEventListener('click', () => $d('export-modal').classList.add('hidden'));
+
+$d('export-select-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.export-check').forEach(c => c.checked = true);
+});
+$d('export-deselect-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.export-check').forEach(c => c.checked = false);
+});
+
+$d('export-confirm-btn')?.addEventListener('click', async () => {
+    const checked = document.querySelectorAll('.export-check:checked');
+    const ids = Array.from(checked).map(c => c.value);
+    if (ids.length === 0) { alert('请至少选择一个会话'); return; }
+
+    try {
+        const resp = await authFetch('/api/export?ids=' + ids.join(','));
+        if (!resp.ok) throw new Error('导出失败');
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url;
+        const disp = resp.headers.get('Content-Disposition') || '';
+        a.download = (disp.match(/filename="?(.+?)"?$/) || ['','realchat-backup.json'])[1];
+        a.click(); URL.revokeObjectURL(url);
+        $d('export-modal').classList.add('hidden');
+    } catch (err) {
+        console.error('Export failed:', err);
+        alert('导出失败');
+    }
+});
+
+// 导入 — 文件选择器（逻辑不变）
+$d('import-btn')?.addEventListener('click', () => $d('import-file-input').click());
+
+$d('import-file-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (data.version !== 'realchat-v2') {
+            alert('不支持的备份文件格式');
+            return;
+        }
+        const count = Object.keys(data.sessions || {}).length;
+        if (!confirm(`将导入 ${count} 个会话和自定义角色。\n\n已有同名会话会跳过，API Key/Token 不会被覆盖。\n\n确认导入？`)) return;
+
+        const resp = await authFetch('/api/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail);
+        const result = await resp.json();
+        alert(`导入完成！新增 ${result.imported} 项，跳过 ${result.skipped} 项。`);
+        await loadChatList();
+    } catch (err) {
+        console.error('Import failed:', err);
+        alert('导入失败：' + err.message);
+    }
+    e.target.value = '';
+});
 // ============================================================
 // Init
 // ============================================================

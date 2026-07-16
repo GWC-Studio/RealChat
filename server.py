@@ -29,7 +29,8 @@ from config import (
     DEFAULT_THINKING_LEVEL, AUTH_TOKEN
 )
 from discussion import (
-    create_room, get_room, list_rooms, DEFAULT_AGENTS,
+    create_room, get_room, list_rooms,
+    DEFAULT_AGENTS, get_all_agents, load_custom_agents, save_custom_agents,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -137,7 +138,6 @@ class SessionStore:
             "created_at": now,
             "updated_at": now,
         }
-        asyncio.create_task(self._save())
         return sid
 
     def get(self, sid: str) -> Optional[dict]:
@@ -147,13 +147,18 @@ class SessionStore:
         """返回会话列表（按更新时间倒序，不含完整历史）"""
         result = []
         for s in sorted(self._sessions.values(), key=lambda x: x["updated_at"], reverse=True):
-            result.append({
+            item = {
                 "id": s["id"],
                 "title": s["title"],
                 "created_at": s["created_at"],
                 "updated_at": s["updated_at"],
-                "msg_count": len(s["history"]),
-            })
+                "msg_count": len(s.get("history", [])),
+                "type": s.get("type", "chat"),
+            }
+            # 群聊会话附加 discussion 字段
+            if s.get("type") == "discussion" and "discussion" in s:
+                item["discussion_status"] = s["discussion"].get("status", "completed")
+            result.append(item)
         return result
 
     async def update(self, sid: str, **kwargs):
@@ -164,6 +169,14 @@ class SessionStore:
             if k in ("title", "history", "messages"):
                 s[k] = v
         s["updated_at"] = time.time()
+        await self._save()
+
+    async def set_extra(self, sid: str, key: str, value):
+        """设置 session 的额外字段（如 type, discussion）并保存"""
+        if sid not in self._sessions:
+            return
+        self._sessions[sid][key] = value
+        self._sessions[sid]["updated_at"] = time.time()
         await self._save()
 
     async def delete(self, sid: str):
@@ -636,14 +649,33 @@ async def api_get_session(session_id: str):
     s = store.get(session_id)
     if not s:
         raise HTTPException(404, "会话不存在")
-    return {
+    is_disc = s.get("type") == "discussion"
+    disc = s.get("discussion", {})
+    result = {
         "id": s["id"],
         "title": s["title"],
         "history": s["history"],
         "messages": s.get("messages", []),
         "created_at": s["created_at"],
         "updated_at": s["updated_at"],
+        "type": s.get("type", "chat"),
+        "is_discussion": is_disc,
+        "discussion_status": disc.get("status") if is_disc else None,
+        "discussion": disc if is_disc else None,
     }
+    # 转换 agent 消息为前端期望的嵌套格式（深拷贝避免原地修改存储数据）
+    msgs = []
+    for m in s.get("messages", []):
+        m2 = dict(m)
+        if m2.get("role") == "agent":
+            m2["agent"] = {
+                "name": m2.pop("agent_name", ""),
+                "emoji": m2.pop("agent_emoji", ""),
+                "color": m2.pop("agent_color", "#888"),
+            }
+        msgs.append(m2)
+    result["messages"] = msgs
+    return result
 
 
 @app.patch("/api/sessions/{session_id}")
@@ -731,8 +763,8 @@ async def api_save_settings(req: Request):
 
 @app.get("/api/discussion/agents")
 async def api_list_agents():
-    """获取预设角色列表"""
-    return {"agents": DEFAULT_AGENTS}
+    """获取所有角色列表（预设 + 自定义）"""
+    return {"agents": get_all_agents(), "preset": DEFAULT_AGENTS, "custom": load_custom_agents()}
 
 
 @app.post("/api/discussion/start")
@@ -741,7 +773,7 @@ async def api_start_discussion(req: Request):
     body = await req.json()
     topic = body.get("topic", "").strip()
     agent_names = body.get("agents", [])  # 选中的 agent 名字列表
-    max_rounds = min(body.get("max_rounds", 6), 20)
+    max_rounds = min(body.get("max_rounds", 6), 32)
     token_limit = min(body.get("token_limit", 8000), 32000)
 
     if not topic:
@@ -752,11 +784,12 @@ async def api_start_discussion(req: Request):
     if not api_key:
         raise HTTPException(400, "请先配置 API Key")
 
-    # 筛选选中的 agent
+    # 筛选选中的 agent（支持预设和自定义角色）
+    all_agents = get_all_agents()
     if agent_names:
-        agents = [a for a in DEFAULT_AGENTS if a["name"] in agent_names]
+        agents = [a for a in all_agents if a["name"] in agent_names]
     else:
-        agents = DEFAULT_AGENTS[:3]  # 默认 3 个
+        agents = all_agents[:3]  # 默认 3 个
 
     if len(agents) < 2:
         raise HTTPException(400, "至少需要 2 个角色参与讨论")
@@ -773,30 +806,29 @@ async def api_start_discussion(req: Request):
         top_p=body.get("top_p", 0.9),
     )
 
+    # 创建对应的聊天会话（群聊作为特殊会话类型，空对话）
+    title = topic if topic else f"{'、'.join(a['name'] for a in agents[:3])} 的群聊"
+    sid = store.create(title=title)
+    await store.set_extra(sid, "type", "discussion")
+    await store.set_extra(sid, "discussion", {
+        "room_id": room.room_id,
+        "topic": topic or "",
+        "agents": [{"name": a["name"], "emoji": a["emoji"], "color": a["color"], "system_prompt": a.get("system_prompt","")} for a in agents],
+        "status": "active",
+        "rounds": 0,
+        "max_rounds": max_rounds,
+    })
+    await store.update(sid, messages=[{
+        "role": "system", "type": "agents",
+        "content": f"参与角色：{'、'.join(a['emoji']+a['name'] for a in agents)} | 每轮 {max_rounds} 次发言",
+    }])
+
     return {
         "room_id": room.room_id,
+        "session_id": sid,
         "agents": [{"name": a["name"], "emoji": a["emoji"], "color": a["color"]} for a in agents],
         "topic": topic,
     }
-
-
-@app.get("/api/discussion/stream")
-async def api_discussion_stream(req: Request, room_id: str = ""):
-    """SSE 流：实时获取讨论事件"""
-    room = get_room(room_id)
-    if not room:
-        raise HTTPException(404, "讨论房间不存在")
-
-    async def event_stream():
-        async for evt in room.run_discussion():
-            yield f"data: {evt}\n\n"
-        yield "data: {\"type\": \"stream_end\"}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 @app.post("/api/discussion/interrupt")
@@ -837,6 +869,233 @@ async def api_discussion_abort(req: Request):
 async def api_list_discussion_rooms():
     """列出活跃讨论房间"""
     return {"rooms": list_rooms()}
+
+
+# ---- 自定义角色 CRUD ----
+
+@app.get("/api/discussion/agents/custom")
+async def api_get_custom_agents():
+    """获取自定义角色列表"""
+    return {"agents": load_custom_agents()}
+
+
+@app.post("/api/discussion/agents/custom")
+async def api_create_custom_agent(req: Request):
+    """创建或更新自定义角色"""
+    body = await req.json()
+    name = body.get("name", "").strip()
+    emoji = body.get("emoji", "🤖").strip()
+    color = body.get("color", "#6c63ff").strip()
+    system_prompt = body.get("system_prompt", "").strip()
+
+    if not name:
+        raise HTTPException(400, "角色名不能为空")
+    if len(name) > 20:
+        raise HTTPException(400, "角色名最长20字")
+    if not system_prompt:
+        raise HTTPException(400, "角色 Prompt 不能为空")
+
+    agents = load_custom_agents()
+    # 更新或新增
+    existing = next((a for a in agents if a["name"] == name), None)
+    if existing:
+        existing["emoji"] = emoji
+        existing["color"] = color
+        existing["system_prompt"] = system_prompt
+    else:
+        agents.append({
+            "name": name,
+            "emoji": emoji,
+            "color": color,
+            "system_prompt": system_prompt,
+        })
+    save_custom_agents(agents)
+    return {"status": "ok", "agent": {"name": name, "emoji": emoji, "color": color}}
+
+
+@app.delete("/api/discussion/agents/custom")
+async def api_delete_custom_agent(req: Request):
+    """删除自定义角色"""
+    body = await req.json()
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "角色名不能为空")
+
+    agents = load_custom_agents()
+    agents = [a for a in agents if a["name"] != name]
+    save_custom_agents(agents)
+    return {"status": "ok"}
+
+
+# ---- 群聊会话联动 ----
+
+@app.post("/api/discussion/session-stream")
+async def api_discussion_session_stream(req: Request):
+    """群聊 SSE 流 — 每次用户发言触发一轮讨论，可重复调用"""
+    body = await req.json()
+    room_id = body.get("room_id", "").strip()
+    session_id = body.get("session_id", "").strip()
+    user_message = body.get("user_message", "").strip()
+
+    room = get_room(room_id)
+    if not room:
+        raise HTTPException(404, "讨论房间不存在")
+
+    # 存储用户消息到 session
+    if user_message:
+        s = store.get(session_id)
+        if s:
+            msgs = list(s.get("messages", []))
+            msgs.append({"role": "user", "content": user_message})
+            s["messages"] = msgs
+            s["updated_at"] = time.time()
+
+    async def event_stream():
+        async for evt in room.run_as_chat(user_message=user_message):
+            # 提取事件类型作为 SSE event: 行
+            try:
+                data = json.loads(evt)
+                etype = data.get("type", "message")
+            except Exception:
+                etype = "message"
+            yield f"event: {etype}\ndata: {evt}\n\n"
+            # 同步写入 session 存储
+            try:
+                data = json.loads(evt)
+                s = store.get(session_id)
+                if not s:
+                    continue
+                if data.get("type") == "done":
+                    disc = data.get("discussion", {})
+                    agent = data.get("agent")
+                    if agent:
+                        msgs = list(s.get("messages", []))
+                        if data.get("think_text"):
+                            msgs.append({"role": "agent", "agent_name": agent["name"],
+                                "agent_emoji": agent["emoji"], "agent_color": agent["color"],
+                                "type": "thinking", "content": data["think_text"]})
+                        for p in data.get("paras", []):
+                            if p.strip():
+                                msgs.append({"role": "agent", "agent_name": agent["name"],
+                                    "agent_emoji": agent["emoji"], "agent_color": agent["color"],
+                                    "type": "speech", "content": p.strip()})
+                        s["messages"] = msgs
+                    if disc:
+                        s["discussion"]["status"] = disc.get("status", "active")
+                        s["discussion"]["rounds"] = disc.get("rounds", 0)
+                        if disc.get("summary"):
+                            msgs = list(s.get("messages", []))
+                            msgs.append({"role": "system", "type": "summary", "content": disc["summary"]})
+                            s["messages"] = msgs
+                    s["updated_at"] = time.time()
+                elif data.get("type") == "user_interject" and data.get("text"):
+                    msgs = list(s.get("messages", []))
+                    msgs.append({"role": "user", "content": data["text"]})
+                    s["messages"] = msgs
+                    s["updated_at"] = time.time()
+            except Exception:
+                pass
+        # 完成后保存（保持 active 状态，允许下一轮）
+        try:
+            s = store.get(session_id)
+            if s:
+                s["updated_at"] = time.time()
+            await store._save()
+        except Exception:
+            pass
+        yield "event: stream_end\ndata: {\"type\": \"stream_end\"}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ============================================================
+# 数据导入导出
+# ============================================================
+
+@app.get("/api/export")
+async def api_export(ids: str = ""):
+    """导出数据为 JSON 文件。ids: 逗号分隔的会话 ID，为空则导出全部"""
+    # 筛选会话
+    if ids:
+        id_list = [i.strip() for i in ids.split(",") if i.strip()]
+        sessions = {sid: store._sessions[sid] for sid in id_list if sid in store._sessions}
+    else:
+        sessions = store._sessions
+
+    export_data = {
+        "version": "realchat-v2",
+        "exported_at": time.time(),
+        "exported_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+        "sessions": sessions,
+        "settings": load_settings(),
+        "custom_agents": load_custom_agents(),
+    }
+    # 隐藏 API Key
+    if "api_key" in export_data["settings"]:
+        key = export_data["settings"]["api_key"]
+        if key and len(key) > 8:
+            export_data["settings"]["api_key"] = key[:4] + "****" + key[-4:]
+
+    return JSONResponse(
+        export_data,
+        headers={"Content-Disposition": "attachment; filename=realchat-backup-{}.json".format(
+            time.strftime("%Y%m%d-%H%M%S", time.localtime()))}
+    )
+
+
+@app.post("/api/import")
+async def api_import(req: Request):
+    """导入数据，合并到现有数据中"""
+    body = await req.json()
+
+    if body.get("version", "") != "realchat-v2":
+        raise HTTPException(400, "不支持的备份文件格式")
+
+    imported = 0
+    skipped = 0
+
+    # 导入会话
+    sessions = body.get("sessions", {})
+    if sessions:
+        for sid, sdata in sessions.items():
+            if sid not in store._sessions:
+                sdata["imported_at"] = time.time()
+                store._sessions[sid] = sdata
+                imported += 1
+            else:
+                skipped += 1
+        await store._save()
+
+    # 导入自定义角色
+    custom_agents = body.get("custom_agents", [])
+    if custom_agents:
+        existing = load_custom_agents()
+        existing_names = {a["name"] for a in existing}
+        for agent in custom_agents:
+            if agent["name"] not in existing_names:
+                existing.append(agent)
+                imported += 1
+        save_custom_agents(existing)
+
+    # 导入设置（仅模型/提示词，不覆盖 Key/Token）
+    settings = body.get("settings", {})
+    if settings:
+        current = load_settings()
+        safe_fields = ["model", "system_prompt", "temperature", "top_p", "max_tokens",
+                       "frequency_penalty", "presence_penalty", "thinking_level", "thinking_enabled"]
+        changed = False
+        for k in safe_fields:
+            if k in settings:
+                current[k] = settings[k]
+                changed = True
+        if changed:
+            save_settings(current)
+
+    return {"status": "ok", "imported": imported, "skipped": skipped}
 
 
 # 静态文件

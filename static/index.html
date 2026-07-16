@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RealChat </title>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=2.0.0">
 </head>
 <body>
 
@@ -32,7 +32,12 @@
     </div>
     <div id="chat-list"></div>
     <div id="sidebar-footer">
-      <a href="/discussion.html" id="discussion-btn" class="sidebar-link-btn" title="群聊讨论">💬 群聊讨论</a>
+      <button id="discussion-modal-btn" class="sidebar-link-btn" title="群聊讨论">💬 群聊讨论</button>
+      <div style="display:flex;gap:6px;">
+        <button id="export-btn" class="sidebar-link-btn" title="导出聊天记录" style="flex:1;">📤 导出</button>
+        <button id="import-btn" class="sidebar-link-btn" title="导入聊天记录" style="flex:1;">📥 导入</button>
+      </div>
+      <input type="file" id="import-file-input" accept=".json" style="display:none;">
       <button id="settings-btn" title="设置">⚙️ 设置</button>
     </div>
   </aside>
@@ -83,6 +88,96 @@
       </span>
     </div>
   </main>
+</div>
+
+<!-- 群聊创建弹窗 -->
+<div id="discussion-create-modal" class="modal-overlay hidden">
+  <div class="modal-content modal-wide" style="max-width:600px;">
+    <div class="modal-header">
+      <h3>💬 创建群聊</h3>
+      <button id="disc-create-close" class="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="disc-create-form">
+        <p class="section-desc" style="margin-bottom:12px;">创建后是一个空的群聊房间，你在输入框里说第一句话来开启讨论。之后每发一条消息，AI 们都会依次回应。</p>
+
+        <label class="setting-label" style="margin-bottom:8px;">选择参与角色（至少 2 个）</label>
+        <div id="disc-agent-selector" class="agent-selector" style="margin-bottom:16px;"></div>
+
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+          <label class="setting-label" for="disc-max-rounds" style="margin-bottom:0;">讨论轮数</label>
+          <select id="disc-max-rounds" class="rounds-select">
+            <option value="2">2 轮</option>
+            <option value="4" selected>4 轮</option>
+            <option value="6">6 轮</option>
+            <option value="8">8 轮</option>
+            <option value="12">12 轮</option>
+            <option value="16">16 轮</option>
+            <option value="24">24 轮</option>
+            <option value="32">32 轮</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;">
+      <span id="disc-custom-agent-link" style="font-size:13px;color:var(--accent);cursor:pointer;">🎭 自定义角色</span>
+      <div style="display:flex;gap:8px;">
+        <button id="disc-create-cancel" class="btn-secondary">取消</button>
+        <button id="disc-start-btn" class="btn-primary" disabled>🚀 开始讨论</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 自定义角色编辑器弹窗 -->
+<div id="custom-agent-modal" class="modal-overlay hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>🎭 管理自定义角色</h3>
+      <button id="custom-agent-close" class="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <!-- 已有角色列表 -->
+      <div id="custom-agent-list" style="margin-bottom:16px;">
+        <p style="font-size:13px;color:var(--text-muted);">加载中...</p>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
+
+      <!-- 新建/编辑表单 -->
+      <div class="custom-agent-form">
+        <h4 style="font-size:14px;color:var(--text-primary);margin-bottom:12px;">新建 / 编辑角色</h4>
+        <input type="hidden" id="custom-agent-edit-id">
+
+        <label class="setting-label" for="custom-agent-name">名称</label>
+        <input type="text" id="custom-agent-name" class="setting-input"
+               placeholder="例如「哲学家」" style="margin-bottom:12px;">
+
+        <div style="display:flex;gap:12px;margin-bottom:12px;">
+          <div style="flex:1;">
+            <label class="setting-label" for="custom-agent-emoji">Emoji</label>
+            <input type="text" id="custom-agent-emoji" class="setting-input"
+                   placeholder="🤔" maxlength="4" style="width:80px;">
+          </div>
+          <div style="flex:2;">
+            <label class="setting-label" for="custom-agent-color">颜色</label>
+            <input type="color" id="custom-agent-color" class="setting-input"
+                   value="#6c63ff" style="width:80px;height:38px;padding:4px;">
+          </div>
+        </div>
+
+        <label class="setting-label" for="custom-agent-prompt">Prompt（角色设定）</label>
+        <textarea id="custom-agent-prompt" class="setting-textarea" rows="8"
+                  placeholder="描述这个角色的性格、说话方式、知识领域..." style="margin-bottom:12px;"></textarea>
+
+        <div style="display:flex;gap:8px;">
+          <button id="custom-agent-save" class="btn-primary">💾 保存</button>
+          <button id="custom-agent-delete" class="btn-secondary" style="color:#ff4444;border-color:#ff4444;">🗑️ 删除</button>
+          <button id="custom-agent-clear" class="btn-secondary">清空</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- 设置弹窗 -->
@@ -245,6 +340,30 @@
   </div>
 </div>
 
-<script src="/app.js"></script>
+<!-- 导出选择模态框 -->
+<div id="export-modal" class="modal-overlay hidden">
+  <div class="modal-content" style="max-width:500px;">
+    <div class="modal-header">
+      <h3>📤 导出聊天记录</h3>
+      <button id="export-modal-close" class="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="font-size:13px;color:var(--text-secondary);">选择要导出的会话</span>
+        <div style="display:flex;gap:6px;">
+          <button id="export-select-all" class="btn-secondary" style="font-size:12px;padding:4px 10px;">全选</button>
+          <button id="export-deselect-all" class="btn-secondary" style="font-size:12px;padding:4px 10px;">取消全选</button>
+        </div>
+      </div>
+      <div id="export-session-list" style="max-height:45vh;overflow-y:auto;"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="export-cancel-btn" class="btn-secondary">取消</button>
+      <button id="export-confirm-btn" class="btn-primary">导出选中</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js?v=2.0.0"></script>
 </body>
 </html>
